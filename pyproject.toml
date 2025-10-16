@@ -1,0 +1,33 @@
+[tool.poetry]
+name = "firebird-assistant"
+version = "0.1.0"
+description = "CLI for Firebird backups, exports and quick health checks."
+authors = ["Nicklas Desens <n.desens@eibich.de>"]
+readme = "README.md"
+packages = [{ include = "firebird_assistant", from = "src" }]
+license = "MIT"
+homepage = "https://github.com/your-user/firebird-assistant"
+keywords = ["firebird", "database", "backup", "export", "cli", "python"]
+
+[tool.poetry.scripts]
+firebird-assistant = "firebird_assistant.__main__:app"
+
+[tool.poetry.dependencies]
+python = "^3.10"
+typer = {version="^0.12.3", extras=["all"]}
+rich = "^13.7.1"
+pydantic = "^2.9.2"
+firebird-driver = "^1.10.2"
+python-dotenv = "^1.0.1"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.3.3"
+ruff = "^0.6.9"
+mypy = "^1.11.2"
+
+[tool.ruff]
+line-length = 100
+
+[tool.mypy]
+python_version = "3.10"
+strict = false
