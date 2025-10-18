@@ -155,6 +155,7 @@ def detect_server_version(dsn: str, user: Optional[str]=None, password: Optional
         return "0.0.0"
     return "0.0.0"
 
+# viel zu simple gedacht -> überarbeiten!!!!!
 def _find_fbsvcmgr() -> str:
     p = shutil.which("fbsvcmgr")
     if p: return p
@@ -173,3 +174,40 @@ def _find_fbsvcmgr() -> str:
 def server_major(version_str: str) -> int:
     m = re.match(r"^\s*(\d+)", version_str or "")
     return int(m.group(1)) if m else 0
+
+def _parse_dsn(dsn: str):
+    """
+    Unterstützt:
+      - 'C:\\path\\db.fdb' (lokal, XNET)
+      - 'localhost:C:\\path\\db.fdb'
+      - 'localhost/3053:C:\\path\\db.fdb'
+    Gibt (host, port, path) zurück. Bei lokalem Attach: (None, None, fullpath)
+    """
+    # Windows-Lokalpfad (z. B. 'C:\...') enthält ':\' – NICHT mit host:db verwechseln
+    if re.search(r'^[A-Za-z]:\\', dsn):
+        return (None, None, dsn)
+    # host[:/port]:path
+    if ':' in dsn:
+        hostpart, path = dsn.split(':', 1)
+        if '/' in hostpart:
+            host, port = hostpart.split('/', 1)
+        else:
+            host, port = hostpart, None
+        return (host or None, port or None, path)
+    # Fallback: behandeln wie lokal
+    return (None, None, dsn)
+
+
+def _service_target_from_dsn(dsn: str) -> str:
+    """
+    Baut das fbsvcmgr-Ziel:
+      - lokal/XNET: 'service_mgr'
+      - TCP ohne Port: 'host:service_mgr'
+      - TCP mit Port:  'host/port:service_mgr'
+    """
+    host, port, _ = _parse_dsn(dsn)
+    if host is None:
+        return 'service_mgr'
+    if port:
+        return f'{host}/{port}:service_mgr'
+    return f'{host}:service_mgr'
