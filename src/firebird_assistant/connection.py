@@ -30,6 +30,7 @@ from __future__ import annotations
 import contextlib
 import csv
 import io
+import re
 from dataclasses import dataclass
 from typing import Any, Iterable, List, Optional, Tuple, Literal, Dict
 
@@ -454,4 +455,57 @@ def connect(
         charset=charset, connect_timeout=timeout,
         auth=FBAuth(user=user, password=password, role=role),
     )
+    return FirebirdConnection.open(params)
+
+
+def open_dsn(
+    dsn: str,
+    user: Optional[str] = None,
+    password: Optional[str] = None,
+    *,
+    role: Optional[str] = None,
+    charset: str = "UTF8",
+    timeout: int = 15,
+) -> FirebirdConnection:
+    """
+    Convenience helper to open a connection from a classic DSN string.
+
+    A DSN may be one of the following forms:
+
+      - ``C:\\path\\db.fdb`` (local path)
+      - ``localhost:C:\\path\\db.fdb`` (host + path)
+      - ``localhost/3050:C:\\path\\db.fdb`` (host/port + path)
+
+    :param dsn: Classic Firebird DSN.
+    :param user: Username (optional).
+    :param password: Password (optional).
+    :param role: Optional role.
+    :param charset: Character set (default: UTF8).
+    :param timeout: Connection timeout in seconds.
+    :return: A :class:`FirebirdConnection` instance.
+    """
+    # Parse classic DSN
+    host: Optional[str]
+    port: Optional[int]
+    database: str
+    if re.match(r"^[A-Za-z]:\\", dsn):  # Windows local path
+        host, port, database = None, None, dsn
+    elif ":" in dsn:
+        host_part, database = dsn.split(":", 1)
+        if "/" in host_part:
+            host, port_str = host_part.split("/", 1)
+            try:
+                port = int(port_str)
+            except ValueError:
+                port = None
+        else:
+            host = host_part
+            port = None
+    else:
+        host, port, database = None, None, dsn
+    # Default host/port
+    conn_host = host or "localhost"
+    conn_port = port or 3050
+    auth = FBAuth(user=user or "SYSDBA", password=password or "", role=role) if user or password or role else None
+    params = FBConnParams(host=conn_host, port=conn_port, database=database, charset=charset, auth=auth, connect_timeout=timeout)
     return FirebirdConnection.open(params)
