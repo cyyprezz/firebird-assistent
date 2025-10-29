@@ -91,6 +91,17 @@ firebird-base = ">=1.8,<2.0"
 python-dateutil = ">=2.8"
 
 [[package]]
+name = "firebirdsql"
+version = "1.4.1"
+description = "Firebird RDBMS bindings for python."
+optional = false
+python-versions = "*"
+groups = ["main"]
+files = [
+    {file = "firebirdsql-1.4.1.tar.gz", hash = "sha256:4863b5497924c74fc213bcb91ce69647b42f33fdd24a199c62c22039423cb1d4"},
+]
+
+[[package]]
 name = "iniconfig"
 version = "2.1.0"
 description = "brain-dead simple config-ini parsing"
@@ -657,4 +668,4 @@ typing-extensions = ">=4.12.0"
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.10"
-content-hash = "bd7b5cef8ffff137c72138b6c8a103d22178177356490a0514afc9ae484a15ef"
+content-hash = "b2d2f78a004661e6f07c0041bfeeb1cdae81b2c7147450d51fa514f42786cff3"

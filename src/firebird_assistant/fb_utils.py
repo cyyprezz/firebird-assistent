@@ -13,13 +13,123 @@ import subprocess
 import shutil
 import os
 import re
-from typing import Optional
+from typing import Optional, Dict, Any
 
 # Import unified connection helpers
 from .connection import open_dsn, FirebirdError
 from .dbapi import connect_unified
 
 logger = logging.getLogger(__name__)
+
+
+def server_major(version: str) -> Optional[int]:
+    """
+    Extract the major version (as int) from a Firebird version string.
+
+    Accepts forms like "3.0.10", "Firebird 2.5", "WI-V2.5.9" and returns 3 or 2.
+    Returns None if no digits can be found.
+    """
+    if not version:
+        return None
+    m = re.search(r"(\d+)\.(\d+)", version)
+    if m:
+        try:
+            return int(m.group(1))
+        except Exception:
+            return None
+    m = re.search(r"(\d+)", version)
+    if m:
+        try:
+            return int(m.group(1))
+        except Exception:
+            return None
+    return None
+
+
+def quick_health_summary(dsn: str, user: Optional[str] = None, password: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Provide a small health summary for the given database.
+
+    Returns a dictionary with keys like: engine, server_version, user_tables, attachments.
+    If some queries are not permitted for the current user, the respective values
+    may be omitted.
+    """
+    summary: Dict[str, Any] = {}
+    try:
+        with open_dsn(dsn, user=user, password=password) as conn:
+            summary["engine"] = conn.engine()
+            try:
+                summary["server_version"] = conn.server_version()
+            except Exception:
+                pass
+            # Count non-system relations (tables/views with SYSTEM_FLAG = 0)
+            try:
+                rows = conn.query(
+                    "SELECT COUNT(*) FROM RDB$RELATIONS WHERE COALESCE(RDB$SYSTEM_FLAG, 0) = 0"
+                )
+                if rows:
+                    summary["user_relations"] = int(rows[0][0])
+            except Exception:
+                pass
+            # Try MON$ATTACHMENTS count (may require privileges)
+            try:
+                rows = conn.query("SELECT COUNT(*) FROM MON$ATTACHMENTS")
+                if rows:
+                    summary["attachments"] = int(rows[0][0])
+            except Exception:
+                pass
+            # Try MON$DATABASE for page size, forced writes and transaction counters
+            try:
+                rows = conn.query(
+                    "SELECT MON$PAGE_SIZE, MON$FORCED_WRITES, MON$OLDEST_TRANSACTION, MON$OLDEST_ACTIVE, MON$NEXT_TRANSACTION FROM MON$DATABASE"
+                )
+                if rows:
+                    page_size, forced_writes, oit, oat, nxt = rows[0]
+                    if page_size is not None:
+                        summary["page_size"] = int(page_size)
+                    if forced_writes is not None:
+                        # Some drivers return 0/1, some True/False
+                        summary["forced_writes"] = bool(forced_writes)
+                    if oit is not None:
+                        summary["oldest_tx"] = int(oit)
+                    if oat is not None:
+                        summary["oldest_active"] = int(aat) if (aat := oat) is not None else None
+                    if nxt is not None:
+                        summary["next_tx"] = int(nxt)
+                    # Compute transaction gap if possible
+                    oit_i = summary.get("oldest_tx")
+                    nxt_i = summary.get("next_tx")
+                    if isinstance(oit_i, int) and isinstance(nxt_i, int):
+                        gap = max(0, nxt_i - oit_i)
+                        summary["tx_gap"] = gap
+            except Exception:
+                pass
+            # Sweep interval (from RDB$DATABASE)
+            try:
+                rows = conn.query("SELECT RDB$SWEEP_INTERVAL FROM RDB$DATABASE")
+                if rows and rows[0][0] is not None:
+                    summary["sweep_interval"] = int(rows[0][0])
+            except Exception:
+                pass
+            # Statements count (optional)
+            try:
+                rows = conn.query("SELECT COUNT(*) FROM MON$STATEMENTS WHERE MON$SQL_TEXT IS NOT NULL")
+                if rows:
+                    summary["statements"] = int(rows[0][0])
+            except Exception:
+                pass
+            # Basic warnings
+            warns: list[str] = []
+            if summary.get("forced_writes") is False:
+                warns.append("Forced writes OFF")
+            tx_gap = summary.get("tx_gap")
+            if isinstance(tx_gap, int) and tx_gap > 20000:
+                warns.append("Large OIT gap; consider sweep")
+            if warns:
+                summary["warnings"] = warns
+    except Exception as e:
+        logger.warning("quick_health_summary failed: %s", e)
+    return summary
 
 
 def stream_query_to_csv(
@@ -113,7 +223,14 @@ def execute_sql(
     the legacy :func:`connect_unified`.
     """
     raw_stmts = [s.strip() for s in sql.split(";") if s.strip()]
-    stmts = [st + ";" for st in raw_stmts]
+    # Expand multi-VALUES INSERTs if requested
+    stmts: list[str] = []
+    for st in raw_stmts:
+        st_full = st + ";"
+        if allow_multi_values:
+            stmts.extend(_expand_multi_values_insert(st_full))
+        else:
+            stmts.append(st_full)
     try:
         with open_dsn(dsn, user=user, password=password) as conn:
             cur = conn._raw.cursor()

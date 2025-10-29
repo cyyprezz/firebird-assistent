@@ -1,4 +1,4 @@
-"""
+﻿"""
 Unified Firebird connection layer with automatic version detection.
 
 This module provides a context-managed connection wrapper that supports both
@@ -32,6 +32,8 @@ import csv
 import io
 import re
 from dataclasses import dataclass
+import inspect
+import logging
 from typing import Any, Iterable, List, Optional, Tuple, Literal, Dict
 
 try:
@@ -117,35 +119,41 @@ class FirebirdConnection:
         """
         # Attempt firebird-driver first
         if _HAS_FB_DRIVER:
-            with contextlib.ExitStack() as stack:
-                try:
-                    raw = _connect_firebird_driver(params)
-                    stack.push(contextlib.closing(raw))
-                    ver = _detect_server_version_driver(raw)
-                    if _is_25(ver):
-                        # Prefer firebirdsql for 2.5 servers
-                        stack.pop_all()
-                        if not _HAS_FIREBIRDSQL:
-                            raise FirebirdError(
-                                "Server is Firebird 2.5, but 'firebirdsql' is not installed. "
-                                "Please install it via 'pip install firebirdsql'."
-                            )
-                        raw_sql = _connect_firebirdsql(params)
-                        return cls(params, "firebirdsql", raw_sql)
-                    else:
-                        stack.pop_all()
-                        return cls(params, "firebird-driver", raw)
-                except Exception:
-                    # Fallback to firebirdsql if driver connect fails
-                    if _HAS_FIREBIRDSQL:
-                        raw_sql = _connect_firebirdsql(params)
-                        return cls(params, "firebirdsql", raw_sql)
-                    raise
+            # Try to connect using firebird-driver. If connect itself fails, fallback.
+            try:
+                raw = _connect_firebird_driver(params)
+            except Exception:
+                if _HAS_FIREBIRDSQL:
+                    raw_sql = _connect_firebirdsql(params)
+                    return cls(params, "firebirdsql", raw_sql)
+                raise
+
+            # Try to detect version, but do not fallback just because detection fails
+            try:
+                ver = _detect_server_version_driver(raw)
+                if _is_25(ver):
+                    # Prefer firebirdsql for 2.5 servers
+                    if not _HAS_FIREBIRDSQL:
+                        raise FirebirdError(
+                            "Server is Firebird 2.5, but 'firebirdsql' is not installed. "
+                            "Please install it via 'pip install firebirdsql'."
+                        )
+                    try:
+                        raw.close()
+                    except Exception:
+                        pass
+                    raw_sql = _connect_firebirdsql(params)
+                    return cls(params, "firebirdsql", raw_sql)
+            except Exception:
+                # Ignore detection errors; proceed with firebird-driver
+                pass
+
+            return cls(params, "firebird-driver", raw)
         # No firebird-driver available; require firebirdsql
         if not _HAS_FIREBIRDSQL:
             raise FirebirdError(
                 "Neither 'firebird-driver' nor 'firebirdsql' is installed. "
-                "Install at least one driver: 'pip install firebird-driver' (FB 3–5) "
+                "Install at least one driver: 'pip install firebird-driver' (FB 3-5) "
                 "or 'pip install firebirdsql' (FB 2.5)."
             )
         raw_sql = _connect_firebirdsql(params)
@@ -392,15 +400,33 @@ def _connect_firebird_driver(params: FBConnParams):
     if not _HAS_FB_DRIVER:
         raise FirebirdError("'firebird-driver' is not installed.")
     dsn = f"{params.host}/{params.port}:{params.database}"
-    kw: Dict[str, Any] = dict(dsn=dsn, charset=params.charset)
-    if params.auth:
-        kw.update(user=params.auth.user, password=params.auth.password)
-        if params.auth.role:
-            kw.update(role=params.auth.role)
-    if params.connect_timeout:
-        # firebird-driver expects milliseconds
-        kw.update(timeout=params.connect_timeout * 1000)
-    return fb_connect(**kw)
+    # Use positional DSN (matches many installs). Be conservative with kwargs for compatibility.
+    # Try with (user, password, role, charset). If TypeError, retry without charset. If still TypeError,
+    # try database/host/port keywords as a last resort.
+    user = params.auth.user if params.auth else None
+    pwd = params.auth.password if params.auth else None
+    role = params.auth.role if params.auth else None
+
+    try:
+        kwargs: Dict[str, Any] = {}
+        if user is not None:
+            kwargs["user"] = user
+        if pwd is not None:
+            kwargs["password"] = pwd
+        if role:
+            kwargs["role"] = role
+        # charset may not be supported on some builds; include first, then fallback
+        kwargs_with_charset = dict(kwargs)
+        kwargs_with_charset["charset"] = params.charset
+        return fb_connect(dsn, **kwargs_with_charset)
+    except TypeError:
+        try:
+            return fb_connect(dsn, **kwargs)
+        except TypeError:
+            # Last-resort: use separate keywords
+            kw_alt: Dict[str, Any] = dict(database=params.database, host=params.host, port=params.port)
+            kw_alt.update(kwargs)
+            return fb_connect(**kw_alt)
 
 
 def _connect_firebirdsql(params: FBConnParams):
@@ -509,3 +535,4 @@ def open_dsn(
     auth = FBAuth(user=user or "SYSDBA", password=password or "", role=role) if user or password or role else None
     params = FBConnParams(host=conn_host, port=conn_port, database=database, charset=charset, auth=auth, connect_timeout=timeout)
     return FirebirdConnection.open(params)
+
